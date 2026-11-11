@@ -1,0 +1,83 @@
+name: Build iOS IPA
+
+on:
+  workflow_dispatch:
+    inputs:
+      flutter_channel:
+        description: "Flutter channel (stable / beta / master)"
+        required: false
+        default: "stable"
+
+permissions:
+  contents: read
+
+jobs:
+  build-ios:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: ${{ github.event.inputs.flutter_channel }}
+          cache: true
+
+      - name: Flutter version
+        run: flutter --version
+
+      - name: Generate iOS platform + fix iOS deps
+        working-directory: app
+        run: |
+          set -e
+          flutter create --platforms=ios --org io.github.ccch1mneyyy --project-name dsh_app .
+          flutter pub add webview_flutter_wkwebview
+          flutter pub get
+
+      - name: Add iOS permission descriptions
+        working-directory: app
+        run: |
+          set -e
+          PLIST="ios/Runner/Info.plist"
+          add_key() {
+            key="$1"; val="$2"
+            /usr/libexec/PlistBuddy -c "Add :${key} string ${val}" "$PLIST" 2>/dev/null \
+              || /usr/libexec/PlistBuddy -c "Set :${key} ${val}" "$PLIST"
+          }
+          add_key "NSCameraUsageDescription" "Scan QR codes and capture photos"
+          add_key "NSMicrophoneUsageDescription" "Voice input and calls"
+          add_key "NSPhotoLibraryUsageDescription" "Pick images from your library"
+          add_key "NSPhotoLibraryAddUsageDescription" "Save images to your library"
+          add_key "NSLocalNetworkUsageDescription" "Connect to DSH hosts on your local network"
+          echo "--- Info.plist updated ---"
+
+      - name: Build iOS (no codesign)
+        working-directory: app
+        run: |
+          set -e
+          flutter build ios --release --no-codesign
+
+      - name: Package unsigned IPA
+        working-directory: app
+        run: |
+          set -e
+          APP_PATH="build/ios/iphoneos/Runner.app"
+          if [ ! -d "$APP_PATH" ]; then
+            echo "Runner.app not found. Listing build/ios:"
+            ls -R build/ios | head -100
+            exit 1
+          fi
+          rm -rf Payload
+          mkdir Payload
+          cp -R "$APP_PATH" Payload/
+          zip -r dsh-go-ios-unsigned.ipa Payload/
+          ls -lh dsh-go-ios-unsigned.ipa
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dsh-go-ios-unsigned
+          path: app/dsh-go-ios-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 7
